@@ -9,8 +9,92 @@ from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 from stock_alert import send_stock_alert
 
+# Add Gemini API imports
+import google.generativeai as genai
+import os
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+import time
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # -------------------- Page Configuration --------------------
 st.set_page_config(page_title="📈 Stock Price Predictor + 🤖 Assistant", layout="wide")
+
+# -------------------- Initialize Gemini AI Model --------------------
+# This function will be used to initialize the model only once when needed
+@st.cache_resource
+def initialize_gemini(max_retries=3, retry_delay=5):
+    """Initialize the Gemini model with retry mechanism"""
+    retries = 0
+    while retries < max_retries:
+        try:
+            # Get API key from environment variable or Streamlit secrets
+            api_key = os.getenv("GEMINI_API_KEY")
+            
+            # If not in environment, try to get from Streamlit secrets
+            if not api_key and hasattr(st, 'secrets') and "GEMINI_API_KEY" in st.secrets:
+                api_key = st.secrets["GEMINI_API_KEY"]
+                
+            if not api_key:
+                logger.error("GEMINI_API_KEY not found in environment or secrets")
+                return None
+                
+            genai.configure(api_key=api_key)
+            
+            # Configure safety settings
+            safety_settings = [
+                {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                {"category": HarmCategory.HARM_CATEGORY_HATE_SPEECH, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                {"category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                {"category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, "threshold": HarmBlockThreshold.BLOCK_NONE}
+            ]
+            
+            # Initialize model
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            logger.info("Gemini model initialized successfully")
+            return model, safety_settings
+            
+        except Exception as e:
+            retries += 1
+            logger.error(f"Attempt {retries} failed to initialize Gemini: {str(e)}")
+            if retries < max_retries:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+    
+    logger.error(f"Failed to initialize Gemini after {max_retries} attempts")
+    return None, None
+
+# DoraFinance system prompt
+SYSTEM_PROMPT = """You are DoraFinance, an expert AI stock market advisor with 50+ years of experience in financial markets.
+Your role is to provide insightful, accurate, and responsible guidance on stock market questions.
+
+Guidelines:
+1. Provide clear, concise explanations suitable for both beginners and experienced investors
+2. When discussing specific stocks or investment strategies, ALWAYS include a disclaimer that this is not financial advice
+3. Include relevant metrics when analyzing companies (P/E ratio, market cap, revenue growth, debt-to-equity, etc.)
+4. Explain technical terms in accessible language, adding brief definitions for specialized terminology
+5. For price predictions, discuss multiple factors that could influence the stock's movement rather than giving specific price targets
+6. Consistently emphasize the importance of diversification, risk management, and investing with a long-term horizon
+7. When information is limited or outdated, acknowledge limitations and avoid speculation
+8. Suggest reliable sources for further research when appropriate
+9. Consider macroeconomic factors and industry trends in your analysis
+10. Be mindful of cognitive biases that affect investment decisions
+11. Also explain the potential risks and rewards of any investment strategy you discuss
+12. Avoid making absolute statements; instead, use phrases like "may", "could", or "might" to indicate uncertainty
+13. If a question is outside your expertise, politely decline to answer and suggest consulting a financial advisor
+15. Explain market technical terms and concepts in a way that is easy to understand for someone without a finance background
+16. Avoid overly technical jargon unless necessary, and provide definitions when you do use it
+17. Be aware of the potential for market manipulation and the ethical implications of your responses
+18. Avoid discussing or promoting any illegal activities related to the stock market
+19. Be cautious about discussing specific stocks or investment strategies that could be considered insider trading or market manipulation
+20. If user ask any financial question or query please provide a solution not telling any illogical advice and knowledge.
+21. At last also add a some random useful tips about share market and stock market investment in every answer.
+
+Remember: Your guidance could influence financial decisions. Be thorough, balanced, and responsible in your responses.
+"""
 
 # -------------------- Custom CSS Styling --------------------
 st.markdown("""
@@ -175,6 +259,12 @@ if "voice_input" not in st.session_state:
     st.session_state["voice_input"] = ""
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+if "model_initialized" not in st.session_state:
+    st.session_state.model_initialized = False
+if "gemini_model" not in st.session_state:
+    st.session_state.gemini_model = None
+if "safety_settings" not in st.session_state:
+    st.session_state.safety_settings = None
 
 # -------------------- Stock Selection --------------------
 col1, col2 = st.columns([3, 1])
@@ -310,7 +400,6 @@ st.pyplot(fig_pred)
 st.markdown("</div>", unsafe_allow_html=True)
 
 # -------------------- Future Forecasting --------------------
-# -------------------- Future Forecasting --------------------
 def predict_future(n_days, prev):
     future = []
     for _ in range(n_days):
@@ -324,7 +413,7 @@ st.markdown("<div class='stock-card'>", unsafe_allow_html=True)
 st.subheader("🔮 Predict Future Prices")
 col1, col2 = st.columns([3, 1])
 with col1:
-    n_days = st.slider("Number of days to predict", 1, 100, 10, key='n_days_slider')  # Added key
+    n_days = st.slider("Number of days to predict", 1, 100, 10, key='n_days_slider')
 with col2:
     st.markdown("<br>", unsafe_allow_html=True)
     
@@ -381,18 +470,57 @@ st.markdown("<div class='stock-card'>", unsafe_allow_html=True)
 st.subheader("🤖 DoraFinance Chat Assistant")
 st.caption("💬 Ask me anything about stocks, trading, or financial analysis")
 
-# Initialize session state for chat
-if "text_question" not in st.session_state:
-    st.session_state.text_question = ""
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+# Function to get Gemini response
+def get_gemini_response(question, stock_info=None):
+    """Get response from the Gemini model using the financial advisor prompt"""
+    try:
+        # Ensure the model is initialized
+        if not st.session_state.model_initialized:
+            model, safety_settings = initialize_gemini()
+            if model is None:
+                return "I'm having trouble connecting to my knowledge base. Please try again later."
+            st.session_state.gemini_model = model
+            st.session_state.safety_settings = safety_settings
+            st.session_state.model_initialized = True
+        
+        # Add stock context to the prompt if available
+        stock_context = ""
+        if stock_info:
+            stock_context = f"""
+            Current analysis is for: {stock_info['symbol']}
+            Current Price: ${stock_info['current_price']:.2f}
+            24hr Change: {stock_info['change']:.2f}%
+            Price Trend: {stock_info['trend']}
+            """
+        
+        current_date = datetime.now().strftime("%B %d, %Y")
+        full_prompt = SYSTEM_PROMPT.replace("{current_date}", current_date)
+        
+        if stock_context:
+            full_prompt += f"\n\nCurrent Stock Context:\n{stock_context}"
+            
+        full_prompt += f"\n\nQuestion: {question}"
+        
+        response = st.session_state.gemini_model.generate_content(
+            full_prompt,
+            safety_settings=st.session_state.safety_settings
+        )
+        
+        if not hasattr(response, 'text'):
+            logger.error("Response from Gemini has no 'text' attribute")
+            return "I couldn't generate a proper response. Please try asking in a different way."
+        
+        return response.text
+        
+    except Exception as e:
+        logger.error(f"Error getting Gemini response: {str(e)}")
+        return f"I encountered an error while processing your request. Please try again or ask a different question."
 
 # Input and Send button
 col1, col2 = st.columns([5, 1])
 with col1:
     text_input = st.text_input(
         "Your Question",
-        value=st.session_state.text_question,
         key="text_input_field",
         placeholder="Ask me about stocks, market trends, or technical analysis..."
     )
@@ -400,39 +528,24 @@ with col2:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("Send 📤", key="send_button"):
         if text_input.strip():
-            try:
-                # Request to local chatbot backend
-                response = requests.post(
-                    "http://localhost:5000/ask",
-                    json={"question": text_input}
-                )
-                
-                if response.status_code == 200:
-                    answer = response.json().get("answer", "No answer returned.")
-                    st.session_state.chat_history.append(("You", text_input))
-                    st.session_state.chat_history.append(("DoraFinance", answer))
-                else:
-                    st.error(f"Chatbot error: {response.text}")
-                    
-            except requests.exceptions.ConnectionError:
-                # Fallback if server isn't running
-                st.session_state.chat_history.append(("You", text_input))
-                # Get last 30 days data safely
-                last_idx = min(30, len(data)-1)
-                current = float(data['Close'].iloc[-1])
-                past = float(data['Close'].iloc[-last_idx]) if last_idx > 0 else current
-                trend = "upward" if current > past else "downward"
-                
-                fallback_response = (
-                    f"Based on the data shown in the charts, {stock} stock has shown "
-                    f"{trend} trend based on recent performance."
-                )
-                st.session_state.chat_history.append(("DoraFinance", fallback_response))
-            except Exception as e:
-                st.error(f"Connection error: {str(e)}")
-
-            # Clear input after sending
-            st.session_state.text_question = ""
+            # Add user message to chat history
+            st.session_state.chat_history.append(("You", text_input))
+            
+            # Create stock info dict to provide context
+            stock_info = {
+                "symbol": stock,
+                "current_price": current_price,
+                "change": change,
+                "trend": "upward" if change > 0 else "downward"
+            }
+            
+            # Show a spinner while getting the response
+            with st.spinner("DoraFinance is thinking..."):
+                # Get response from Gemini
+                response = get_gemini_response(text_input, stock_info)
+                st.session_state.chat_history.append(("DoraFinance", response))
+            
+            # Rerun to update the chat display
             st.rerun()
         else:
             st.warning("Please enter a question.")
@@ -455,9 +568,11 @@ if st.session_state.chat_history:
                 {message}
             </div>
             """, unsafe_allow_html=True)
+    # st.markdown("</div>", unsafe_allow_html=True)
 else:
     st.info("Start a conversation with DoraFinance Assistant by typing your question above!")
 
+# st.markdown("</div>", unsafe_allow_html=True)
 
 # Footer
 st.markdown("<div style='text-align: center; margin-top: 2rem; color: #a0a0a0;'>© 2025 DoraFinance - AI-Powered Stock Analysis Made By Piyush & GG 💵💵</div>", unsafe_allow_html=True)
