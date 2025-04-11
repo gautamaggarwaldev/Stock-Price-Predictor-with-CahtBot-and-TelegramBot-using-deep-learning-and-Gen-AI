@@ -40,7 +40,7 @@ def initialize_gemini(max_retries=3, retry_delay=5):
                 
             if not api_key:
                 logger.error("GEMINI_API_KEY not found in environment or secrets")
-                return None
+                return None, None
                 
             genai.configure(api_key=api_key)
             
