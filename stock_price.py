@@ -8,6 +8,7 @@ from keras.models import load_model #type: ignore
 from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 from stock_alert import send_stock_alert
+import mplfinance as mpf
 
 # Add Gemini API imports
 import google.generativeai as genai
@@ -347,6 +348,39 @@ st.markdown("</div>", unsafe_allow_html=True)
 # -------------------- Display Raw Data --------------------
 with st.expander("📜 View Latest 100 Days of Stock Data"):
     st.dataframe(data.tail(100), use_container_width=True)
+
+
+# -------------------- Candlestick Chart --------------------
+st.markdown("<div class='stock-card'>", unsafe_allow_html=True)
+st.subheader("🕯 Candlestick Chart")
+
+# ✅ Fix for MultiIndex columns (e.g., ('Open', 'TSLA'))
+if isinstance(data.columns, pd.MultiIndex):
+    # Flatten by selecting level 0 (e.g., 'Open', 'High', etc.)
+    data.columns = data.columns.get_level_values(0)
+
+# ✅ Ensure 'Date' column is datetime and set as index
+data['Date'] = pd.to_datetime(data['Date'])
+candlestick_data = data.set_index('Date')[['Open', 'High', 'Low', 'Close', 'Volume']]
+
+# 🎨 Custom style
+mc = mpf.make_marketcolors(up='#4CAF50', down='#F44336', inherit=True)
+s = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
+
+# 📈 Plot candlestick chart
+fig_candle, _ = mpf.plot(
+    candlestick_data.tail(100),  # Last 100 days
+    type='candle',
+    style=s,
+    volume=True,
+    title=f'{stock} Candlestick Chart (Last 100 Days)',
+    returnfig=True,
+    figsize=(15, 5),
+)
+
+st.pyplot(fig_candle)
+st.markdown("</div>", unsafe_allow_html=True)
+
 
 # -------------------- Close Price Line Chart --------------------
 st.markdown("<div class='stock-card'>", unsafe_allow_html=True)
