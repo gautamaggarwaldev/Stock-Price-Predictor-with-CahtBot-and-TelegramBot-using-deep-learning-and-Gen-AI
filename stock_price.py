@@ -17,9 +17,72 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import time
 import logging
 
+import streamlit_authenticator as stauth
+import yaml
+from yaml.loader import SafeLoader
+import sqlite3
+import hashlib
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# -------------------- User Authentication Setup --------------------
+def init_db():
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (username TEXT PRIMARY KEY, 
+                  name TEXT, 
+                  mobile TEXT, 
+                  password TEXT, 
+                  telegram_chat_id TEXT)''')
+    conn.commit()
+    conn.close()
+
+def add_user(username, name, mobile, password, telegram_chat_id):
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    hashed_password = hashlib.sha256(password.encode()).hexdigest()
+    c.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?)",
+              (username, name, mobile, hashed_password, telegram_chat_id))
+    conn.commit()
+    conn.close()
+
+def verify_user(username, password):
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    hashed_password = hashlib.sha256(password.encode()).hexdigest()
+    c.execute("SELECT * FROM users WHERE username=? AND password=?", 
+              (username, hashed_password))
+    result = c.fetchone()
+    conn.close()
+    return result is not None
+
+def get_user_chat_id(username):
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute("SELECT telegram_chat_id FROM users WHERE username=?", (username,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def get_user_name(username):
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute("SELECT name FROM users WHERE username=?", (username,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else "User"
+
+def logout():
+    st.session_state["authenticated"] = False
+    st.session_state["username"] = None
+    st.session_state["chat_history"] = []
+    st.rerun()
+
+# Initialize database
+init_db()
 
 # -------------------- Page Configuration --------------------
 st.set_page_config(page_title="📈 Stock Price Predictor + 🤖 Assistant", layout="wide")
@@ -248,9 +311,75 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Set matplotlib style to dark
-plt.style.use('dark_background')
+# -------------------- Authentication UI --------------------
+def show_auth_page():
+    st.title("🔐 DoraFinance Authentication")
+    
+    auth_tab, help_tab = st.tabs(["Login/Signup", "How to get Telegram Chat ID"])
+    
+    with auth_tab:
+        tab1, tab2 = st.tabs(["Login", "Sign Up"])
+        
+        with tab1:
+            with st.form("login_form"):
+                username = st.text_input("Username", key="login_username")
+                password = st.text_input("Password", type="password", key="login_password")
+                submitted = st.form_submit_button("Login")
+                if submitted:
+                    if verify_user(username, password):
+                        st.session_state["authenticated"] = True
+                        st.session_state["username"] = username
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password")
+        
+        with tab2:
+            with st.form("signup_form"):
+                username = st.text_input("Username", key="signup_username")
+                name = st.text_input("Full Name", key="signup_name")
+                mobile = st.text_input("Mobile Number", key="signup_mobile")
+                password = st.text_input("Password", type="password", key="signup_password")
+                telegram_chat_id = st.text_input("Telegram Chat ID", key="signup_chat_id", 
+                                               help="See 'How to get Telegram Chat ID' tab for instructions")
+                submitted = st.form_submit_button("Sign Up")
+                if submitted:
+                    if username and name and mobile and password and telegram_chat_id:
+                        try:
+                            add_user(username, name, mobile, password, telegram_chat_id)
+                            st.success("Account created successfully! Please login.")
+                        except sqlite3.IntegrityError:
+                            st.error("Username already exists")
+                    else:
+                        st.error("Please fill all fields")
+    
+    with help_tab:
+        st.markdown("""
+        ### How to Get Your Telegram Chat ID
+        
+        1. Start a conversation with the Telegram bot you want to receive alerts
+        2. Click on this URL "https://t.me/dorafinancebot" send /start message
+        3. Open Telegram click on search icon and search for "RawDataBot" and send /start message
+        4. The bot will reply with your chat ID.
+        5. Copy the chat ID and paste it in the "Telegram Chat ID" field during signup.
+        """)
 
+# -------------------- Main App Access Control --------------------
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+if not st.session_state["authenticated"]:
+    show_auth_page()
+    st.stop()
+
+# Set matplotlib style to dark
+user_name = get_user_name(st.session_state["username"])
+plt.style.use('dark_background')
+header_col1, header_col2, header_col3 = st.columns([3, 5, 2])
+with header_col1:
+    st.markdown(f"<div style='color: #4a8bfc; font-size: 14px;'>👤 Welcome, {user_name}</div>", unsafe_allow_html=True)
+with header_col3:
+    if st.button("🚪 Logout", key="logout_button"):
+        logout()
 st.markdown("<h1 style='text-align: center; color: #4a8bfc;'>📈 Stock Price Predictor & 🤖 DoraFinance Assistant</h1>", unsafe_allow_html=True)
 st.markdown("<div style='text-align: center; margin-bottom: 2rem; color: #a0a0a0;'>Your AI-powered financial analysis platform</div>", unsafe_allow_html=True)
 st.markdown("<hr style='margin: 2rem 0; height: 2px; background-color: #333; border: none;'>", unsafe_allow_html=True)
@@ -275,8 +404,12 @@ with col1:
 # -------------------- Telegram Alert --------------------
 with col2:
     if st.button("📱 Get Stock Alerts on Telegram"):
-        send_stock_alert(stock)
-        st.success("Sent Telegram alert based on recent stock activity.")
+        chat_id = get_user_chat_id(st.session_state["username"])
+        if chat_id:
+            send_stock_alert(stock, chat_id)
+            st.success("Alert sent to your Telegram account!")
+        else:
+            st.error("No Telegram Chat ID found in your account. Please update your profile.")
 
 model_file = "Latest_bit_coin_model.keras"  # Static model (update if needed)
 try:

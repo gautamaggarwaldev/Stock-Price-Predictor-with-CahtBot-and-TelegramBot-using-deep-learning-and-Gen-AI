@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-def send_stock_alert(STOCK_NAME):
+def send_stock_alert(STOCK_NAME, chat_id=None):
     STOCK_ENDPOINT = "https://www.alphavantage.co/query"
     NEWS_ENDPOINT = "https://newsapi.org/v2/everything"
 
@@ -26,7 +26,7 @@ def send_stock_alert(STOCK_NAME):
 
         time_series = data.get("Time Series (Daily)")
         if not time_series:
-            telegram_bot_sendtext(f"⚠️ Could not retrieve stock data for {STOCK_NAME}. Please check the symbol.")
+            telegram_bot_sendtext(f"⚠️ Could not retrieve stock data for {STOCK_NAME}. Please check the symbol.", chat_id)
             return
 
         latest_date = sorted(time_series.keys())[0]
@@ -41,9 +41,8 @@ def send_stock_alert(STOCK_NAME):
             f"Volume: {stock_info['5. volume']}\n"
         )
 
-        telegram_bot_sendtext(message)
+        telegram_bot_sendtext(message, chat_id)
         print(message)
-
 
         # Optionally send related news
         params_news = {
@@ -64,23 +63,29 @@ def send_stock_alert(STOCK_NAME):
                     f"{article['description'] or 'No description available.'}\n"
                     f"[Read more]({article['url']})"
                 )
-                telegram_bot_sendtext(news_message)
+                telegram_bot_sendtext(news_message, chat_id)
         else:
-            telegram_bot_sendtext("📭 No recent news articles found.")
+            telegram_bot_sendtext("📭 No recent news articles found.", chat_id)
 
     except Exception as e:
-        telegram_bot_sendtext(f"❌ Error retrieving stock info for {STOCK_NAME}: {e}")
+        telegram_bot_sendtext(f"❌ Error retrieving stock info for {STOCK_NAME}: {e}", chat_id)
 
-def telegram_bot_sendtext(bot_message):
+def telegram_bot_sendtext(bot_message, chat_id=None):
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    bot_chatID = os.getenv("TELEGRAM_CHAT_ID")
+    if not chat_id:
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")  # Fallback to admin chat ID if none provided
+    
+    if not chat_id:
+        print("Error: No Telegram chat ID provided")
+        return None
+        
     send_text = f'https://api.telegram.org/bot{bot_token}/sendMessage'
     response = requests.post(send_text, data={
-        'chat_id': bot_chatID,
+        'chat_id': chat_id,
         'text': bot_message,
         'parse_mode': 'Markdown'
     })
-    print("Telegram API response:", response.json())  # Debugging line
+    print("Telegram API response:", response.json())
     return response.json()
 
 if __name__ == "__main__":
