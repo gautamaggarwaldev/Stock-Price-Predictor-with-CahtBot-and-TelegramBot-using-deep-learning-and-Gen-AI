@@ -1,4 +1,4 @@
-# Tutorial: Stock-Price-Predictor-with-CahtBot-and-TelegramBot-using-deep-learning-and-Gen-AI
+# Tutorial: Stock-Price-Predictor-with-ChatBot-and-TelegramBot-using-deep-learning-and-Gen-AI
 
 This project provides an *AI-powered stock analysis platform* with a **web interface** for users to predict stock prices, get financial advice, and receive real-time alerts. It handles **user authentication**, fetches *historical stock data*, uses **deep learning models** for predictions, and offers an *interactive AI assistant* powered by Google Gemini, all while sending personalized **Telegram notifications**.
 
